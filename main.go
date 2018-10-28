@@ -21,6 +21,7 @@ type Cyclist struct {
 
 const proCyclingStatsBaseURL string = "https://www.procyclingstats.com"
 const proCyclingStatsSearchURLTemplate string = proCyclingStatsBaseURL + "/search.php?term=%s+%s"
+const proCyclingStatsGotoRiderBaseURL string = proCyclingStatsBaseURL + "/search.php"
 
 func main() {
 	var (
@@ -48,36 +49,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	searchReq, err := http.NewRequest("GET", fmt.Sprintf(proCyclingStatsSearchURLTemplate, *firstName, *surname), nil)
+	searchResp, err := makeProCyclingSearch(*firstName, *surname)
 	if err != nil {
-		log.Printf("could not create view search request for '%s', error was: %v", fmt.Sprintf(proCyclingStatsSearchURLTemplate, *firstName, *surname), err)
-		os.Exit(1)
-	}
-
-	// Send req using http Client
-	client := &http.Client{}
-	searchResp, err := client.Do(searchReq)
-	if err != nil {
-		log.Printf("could not get search results from '%s', error was: %v", fmt.Sprintf(proCyclingStatsSearchURLTemplate, *firstName, *surname), err)
+		log.Printf("could not get search results for '%s - %s', error was: %v", *firstName, *surname, err)
 		os.Exit(1)
 	}
 	defer searchResp.Body.Close()
-
-	if searchResp.StatusCode != http.StatusOK {
-		if searchResp.StatusCode == http.StatusTooManyRequests {
-			log.Printf("you are being rate limited")
-			os.Exit(1)
-		}
-
-		log.Printf("bad response from server: %s", searchResp.Status)
-		os.Exit(1)
-	}
 
 	finalURL := searchResp.Request.URL.String()
 	fmt.Printf("The URL request was directed to was: %v\n", finalURL)
 
 	// parse body with goquery.
-	doc, err := goquery.NewDocumentFromReader(searchResp.Body)
+	resultsPage, err := goquery.NewDocumentFromReader(searchResp.Body)
 	if err != nil {
 		log.Printf("could not parse page: %v", err)
 	}
@@ -86,45 +69,81 @@ func main() {
 		fmt.Printf("There were multiple results for: %s %s\n", *firstName, *surname)
 
 		// extract info we want for each search result, use index and item
-		link := parseMultipleSearchResultsForCyclist(doc, *firstName, *surname, *nation)
+		link := parseMultipleSearchResultsForInividualCyclist(resultsPage, *firstName, *surname, *nation)
 		log.Printf("Individual link for cyclist: %s", link)
-		// Send req to get individual cyclist details
-		searchReq, err := http.NewRequest("GET", link, nil)
+
+		resp, err := getProCyclingRiderPage(link)
 		if err != nil {
-			log.Printf("could not create view search request for '%s', error was: %v", link, err)
+			log.Printf("could not get rider page for '%s', error was: %v", link, err)
 			os.Exit(1)
 		}
-		client := &http.Client{}
-		searchResp, err := client.Do(searchReq)
-		if err != nil {
-			log.Printf("could not get search results from '%s', error was: %v", link, err)
-			os.Exit(1)
-		}
-		defer searchResp.Body.Close()
+		defer resp.Body.Close()
 
-		if searchResp.StatusCode != http.StatusOK {
-			if searchResp.StatusCode == http.StatusTooManyRequests {
-				log.Printf("you are being rate limited")
-				os.Exit(1)
-			}
-
-			log.Printf("bad response from server: %s", searchResp.Status)
-			os.Exit(1)
-		}
-
-		doc, err := goquery.NewDocumentFromReader(searchResp.Body)
+		riderPage, err := goquery.NewDocumentFromReader(resp.Body)
 		if err != nil {
 			log.Printf("could not parse individual cyclist page: %v", err)
 		}
 
-		fmt.Printf("%v\n", doc)
+		fmt.Printf("%v\n", riderPage)
 	} else {
 		fmt.Printf("Found only one result for: %s %s\n", *firstName, *surname)
 	}
 	fmt.Printf("\tFound cyclist: %v\n", cyclist)
 }
 
-func parseMultipleSearchResultsForCyclist(resultsPage *goquery.Document, firstName, surname, nation string) string {
+func makeProCyclingSearch(firstName, surname string) (*http.Response, error) {
+	searchReq, err := http.NewRequest("GET", fmt.Sprintf(proCyclingStatsSearchURLTemplate, firstName, surname), nil)
+	if err != nil {
+		log.Printf("could not create search request for '%s', error was: %v", fmt.Sprintf(proCyclingStatsSearchURLTemplate, firstName, surname), err)
+		return nil, fmt.Errorf("could not create search request for '%s', error was: %v", fmt.Sprintf(proCyclingStatsSearchURLTemplate, firstName, surname), err)
+	}
+	client := &http.Client{}
+	searchResp, err := client.Do(searchReq)
+	if err != nil {
+		log.Printf("could not get search results from '%s', error was: %v", searchReq.URL, err)
+		return nil, fmt.Errorf("bad response from server: %s", err)
+	}
+
+	if searchResp.StatusCode != http.StatusOK {
+		if searchResp.StatusCode == http.StatusTooManyRequests {
+			log.Printf("you are being rate limited: %s", err)
+			return nil, fmt.Errorf("you are being rate limited: %s", err)
+		}
+
+		log.Printf("bad response from server: %s", searchResp.Status)
+		return nil, fmt.Errorf("bad response from server: %s", err)
+	}
+	return searchResp, nil
+}
+
+func getProCyclingRiderPage(riderLink string) (*http.Response, error) {
+	// Send req to get individual cyclist details
+	req, err := http.NewRequest("GET", riderLink, nil)
+	if err != nil {
+		log.Printf("could not create ger rider page request for '%s', error was: %v", riderLink, err)
+		return nil, fmt.Errorf("could not create ger rider page request for '%s', error was: %v", riderLink, err)
+	}
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("could not get rider page results from '%s', error was: %v", riderLink, err)
+		return nil, fmt.Errorf("could not get rider page results from '%s', error was: %v", riderLink, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			log.Printf("you are being rate limited: %s", err)
+			return nil, fmt.Errorf("you are being rate limited: %s", err)
+		}
+
+		log.Printf("bad response from server: %s", resp.Status)
+		return nil, fmt.Errorf("bad response from server: %s", err)
+	}
+
+	return resp, nil
+}
+
+func parseMultipleSearchResultsForInividualCyclist(resultsPage *goquery.Document, firstName, surname, nation string) string {
 	var cyclistLink string
 	var flag string
 	resultsPage.Find("body .content div").EachWithBreak(func(index int, item *goquery.Selection) bool {
@@ -140,7 +159,7 @@ func parseMultipleSearchResultsForCyclist(resultsPage *goquery.Document, firstNa
 		resultName := strings.ToUpper(trimAllSpaces(title))
 		searchName := strings.ToUpper(firstName + surname)
 		if strings.Contains(resultName, searchName) && flag == nation {
-			cyclistLink = proCyclingStatsBaseURL + link
+			cyclistLink = proCyclingStatsGotoRiderBaseURL + link
 			return false
 		}
 		return true
