@@ -11,21 +11,67 @@ import (
 	"github.com/ScottFitz/cyclingteammate/model"
 )
 
-// BaseURL the procyclingstats base url
-const BaseURL string = "https://www.procyclingstats.com"
+const baseURL string = "https://www.procyclingstats.com"
+const searchURLTemplate string = baseURL + "/search.php?term=%s+%s"
+const gotoRiderBaseURL string = baseURL + "/search.php"
 
-// SearchURLTemplate the procyclingstats search template
-const SearchURLTemplate string = BaseURL + "/search.php?term=%s+%s"
-
-// GotoRiderBaseURL the procyclingstats rider page url
-const GotoRiderBaseURL string = BaseURL + "/search.php"
-
-// Search make the ProCycling search request
-func Search(firstName, surname string) (*http.Response, error) {
-	searchReq, err := http.NewRequest("GET", fmt.Sprintf(SearchURLTemplate, firstName, surname), nil)
+// GetCyclistDetails get the full cyclist details from ProCyclingStats
+func GetCyclistDetails(firstName, surname, nation string) (*model.Cyclist, error) {
+	searchResp, err := search(firstName, surname)
 	if err != nil {
-		log.Printf("could not create search request for '%s', error was: %v", fmt.Sprintf(SearchURLTemplate, firstName, surname), err)
-		return nil, fmt.Errorf("could not create search request for '%s', error was: %v", fmt.Sprintf(SearchURLTemplate, firstName, surname), err)
+		log.Printf("could not get search results for '%s - %s', error was: %v", firstName, surname, err)
+		return nil, fmt.Errorf("could not get search results for '%s - %s', error was: %v", firstName, surname, err)
+	}
+	defer searchResp.Body.Close()
+
+	finalURL := searchResp.Request.URL.String()
+	fmt.Printf("The URL request was directed to was: %v\n", finalURL)
+
+	// parse body with goquery.
+	riderPage, err := goquery.NewDocumentFromReader(searchResp.Body)
+	if err != nil {
+		log.Printf("could not parse page: %v", err)
+		return nil, fmt.Errorf("could not parse page: %v", err)
+	}
+
+	cyclist := &model.Cyclist{}
+	cyclist.Link = searchResp.Request.URL.String()
+	cyclist.Name = firstName + " " + surname
+	cyclist.Nationality = nation
+	// if more than one search result, parse out specific rider and get that rider page
+	if strings.Compare(finalURL, fmt.Sprintf(searchURLTemplate, firstName, surname)) == 0 {
+		fmt.Printf("There were multiple results for: %s %s\n", firstName, surname)
+
+		link := parseMultipleSearchResultsForInividualCyclist(riderPage, firstName, surname, nation)
+		log.Printf("Individual link for cyclist: %s", link)
+
+		resp, err := getRiderPage(link)
+		if err != nil {
+			log.Printf("could not get rider page for '%s', error was: %v", link, err)
+			return nil, fmt.Errorf("could not get rider page for '%s', error was: %v", link, err)
+		}
+		defer resp.Body.Close()
+
+		cyclist.Link = resp.Request.URL.String()
+
+		riderPage, err := goquery.NewDocumentFromReader(resp.Body)
+		if err != nil {
+			log.Printf("could not parse individual cyclist page: %v", err)
+			return nil, fmt.Errorf("could not parse individual cyclist page: %v", err)
+		}
+
+		fmt.Printf("%v\n", riderPage)
+		parseRiderPage(riderPage, cyclist)
+	}
+	return cyclist, nil
+}
+
+// Search: make the ProCycling search request
+func search(firstName, surname string) (*http.Response, error) {
+	searchReq, err := http.NewRequest("GET", fmt.Sprintf(searchURLTemplate, firstName, surname), nil)
+	if err != nil {
+		log.Printf("could not create search request for '%s', error was: %v", fmt.Sprintf(searchURLTemplate, firstName, surname), err)
+		return nil, fmt.Errorf("could not create search request for '%s', error was: %v", fmt.Sprintf(searchURLTemplate, firstName, surname), err)
 	}
 	client := &http.Client{}
 	searchResp, err := client.Do(searchReq)
@@ -46,8 +92,8 @@ func Search(firstName, surname string) (*http.Response, error) {
 	return searchResp, nil
 }
 
-// GetRiderPage get the ProCycling rider page
-func GetRiderPage(riderLink string) (*http.Response, error) {
+// GetRiderPage: get the ProCycling rider page
+func getRiderPage(riderLink string) (*http.Response, error) {
 	// Send req to get individual cyclist details
 	req, err := http.NewRequest("GET", riderLink, nil)
 	if err != nil {
@@ -74,8 +120,8 @@ func GetRiderPage(riderLink string) (*http.Response, error) {
 	return resp, nil
 }
 
-// ParseMultipleSearchResultsForInividualCyclist parses the multiple results and matches based on name and nationality
-func ParseMultipleSearchResultsForInividualCyclist(resultsPage *goquery.Document, firstName, surname, nation string) string {
+// ParseMultipleSearchResultsForInividualCyclist: parses the multiple results and matches based on name and nationality
+func parseMultipleSearchResultsForInividualCyclist(resultsPage *goquery.Document, firstName, surname, nation string) string {
 	var cyclistLink string
 	var flag string
 	resultsPage.Find("body .content div").EachWithBreak(func(index int, item *goquery.Selection) bool {
@@ -91,7 +137,7 @@ func ParseMultipleSearchResultsForInividualCyclist(resultsPage *goquery.Document
 		resultName := strings.ToUpper(trimAllSpaces(title))
 		searchName := strings.ToUpper(firstName + surname)
 		if strings.Contains(resultName, searchName) && flag == nation {
-			cyclistLink = GotoRiderBaseURL + link
+			cyclistLink = gotoRiderBaseURL + link
 			return false
 		}
 		return true
@@ -99,8 +145,8 @@ func ParseMultipleSearchResultsForInividualCyclist(resultsPage *goquery.Document
 	return cyclistLink
 }
 
-// ParseRiderPage parses the ProCyclingStats rider page into the Cyclisy model
-func ParseRiderPage(riderPage *goquery.Document, cyclist *model.Cyclist) *model.Cyclist {
+// ParseRiderPage: parses the ProCyclingStats rider page into the Cyclisy model
+func parseRiderPage(riderPage *goquery.Document, cyclist *model.Cyclist) *model.Cyclist {
 
 	riderPage.Find("body .content div").EachWithBreak(func(index int, item *goquery.Selection) bool {
 
